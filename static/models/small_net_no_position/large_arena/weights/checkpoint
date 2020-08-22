@@ -1,0 +1,2 @@
+model_checkpoint_path: "episode_3100_weights"
+all_model_checkpoint_paths: "episode_3100_weights"
