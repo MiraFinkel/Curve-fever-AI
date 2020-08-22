@@ -1,0 +1,139 @@
+from game.training_environment import TrainingEnv, AchtungEnv
+from game.settings import *
+import os, sys, inspect
+currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
+parentdir = os.path.dirname(currentdir)
+sys.path.insert(0,parentdir)
+from double_dqn.agent import DQNAgent
+from tqdm import tqdm
+from tensorflow.keras import Model
+from tensorflow.keras.layers import Dense, Input, Conv2D, MaxPool2D, ReLU, Dropout, Flatten, Concatenate, Multiply, Add, BatchNormalization, AveragePooling2D
+from tensorflow.keras.models import load_model, model_from_json
+from tensorflow.keras.optimizers import SGD
+from matplotlib import pyplot as plt
+import json
+import pandas as pd
+import numpy as np
+
+
+this_file_dir = os.path.dirname(__file__)
+project_dir = os.path.join(this_file_dir, os.pardir)
+model_rel_path = "models" + os.path.sep + "cnn_model2"
+model_path = os.path.join(project_dir, model_rel_path)
+
+
+def build_cnn_model(input_shape, output_shape) -> Model:
+    n_actions = output_shape[0]
+    input_tensor = Input(shape=input_shape)
+    next_input = input_tensor
+    for i in range(2):
+        conv = Conv2D(filters=32, kernel_size=(3, 3), padding='same')(next_input)
+        relu = ReLU()(conv)
+        next_input = BatchNormalization()(relu)
+    next_input = MaxPool2D(padding='same', strides=4)(next_input)
+    for i in range(2):
+        conv = Conv2D(filters=64, kernel_size=(3, 3), padding='same')(next_input)
+        relu = ReLU()(conv)
+        next_input = BatchNormalization()(relu)
+    next_input = MaxPool2D(padding='same')(next_input)
+    for i in range(2):
+        conv = Conv2D(filters=128, kernel_size=(3, 3), padding='same')(next_input)
+        relu = ReLU()(conv)
+        next_input = BatchNormalization()(relu)
+    next_input = AveragePooling2D(pool_size=(14, 14), padding='same')(next_input)
+    flatten = Flatten()(next_input)
+    output = Dense(n_actions)(flatten)
+    model = Model(inputs=input_tensor, outputs=output)
+    model.compile(optimizer='adam', loss='mse')
+    return model
+
+
+def evaluate(num_session):
+    if num_session == 0:
+        return [0] * 100
+    weight_file = 'session_' + str(num_session) + '_weights'
+
+    with open(model_path + os.path.sep + 'model_architecture') as json_file:
+        config = json.load(json_file)
+        model = model_from_json(config)
+        model.load_weights(model_path + os.path.sep + weight_file).expect_partial()
+
+    players = ['d', 'r']
+    arguments = [(model,), ()]
+
+    rewards = []
+    for i in range(100):
+        game = AchtungEnv(players, arguments, graphics_on=False)
+        reward = game.play()[0]
+        rewards.append(reward)
+
+    return rewards
+
+start_session = 0
+weight_file = 'session_' + str(start_session) + '_weights'
+
+if __name__ == "__main__":
+    # Initiate data structures
+    training_sessions = 1000
+    batch_size = 64
+    game = TrainingEnv(['r', 'r'], [(), ()], training_mode=True)
+    agent = DQNAgent(game)
+    agent.set_model(build_cnn_model(agent.get_state_shape(), agent.get_action_shape()))
+    if start_session >= 1:
+        agent.net.q_net.load_weights(model_path + f'/session_{start_session}_weights')
+        agent.net.target_net.load_weights(model_path + f'/session_{start_session}_weights')
+    config = agent.to_json()
+    accum_train_rewards = pd.DataFrame()
+    accum_test_rewards = pd.DataFrame()
+    avg_rewards = {}
+    best_session = 0
+
+    # save model architecture
+    with open(os.path.join(model_path, 'model_architecture'), 'w') as json_file:
+        json.dump(config, json_file)
+
+    for i in tqdm(range(start_session, training_sessions + start_session)):
+        Arena.ARENA_WIDTH = 100
+        Arena.ARENA_HEIGHT = 100
+        # if i > 0 and i % 200 == 0:
+        #     Arena.ARENA_WIDTH += 50
+        #     Arena.ARENA_HEIGHT += 50
+        if i == start_session + 1:
+            # Set player to be reinforcement player
+            with open(os.path.join(model_path, 'model_architecture')) as json_file:
+                model = model_from_json(json.load(json_file))
+                game.set_player(1, 'd', model)
+        if i >= start_session + 1:
+            # Set players weights to be the trained weights from last session
+            game.players[1]._net.load_weights(model_path + f'/session_{i}_weights')
+
+        train_rewards, num_actions = agent.train(100, None, batch_size)
+
+        # Save all values that need to be saved
+        agent.save_weights(os.path.join(model_path, f'session_{i + 1}_weights'))
+        accum_train_rewards = accum_train_rewards.append(train_rewards)
+        with open(os.path.join(model_path, 'train_rewards.csv'), 'w') as reward_file:
+            accum_train_rewards.to_csv(reward_file)
+
+        if i % 5 == 0:
+            test_rewards = evaluate(i)
+            avg_reward = np.average(test_rewards)
+            avg_rewards[i] = avg_reward
+
+            if avg_reward >= avg_rewards[best_session]:
+                best_session = i
+
+            accum_test_rewards = accum_test_rewards.append(test_rewards)
+            with open(os.path.join(model_path, 'test_rewards.csv'), 'w') as reward_file:
+                accum_test_rewards.to_csv(reward_file)
+
+            print("average reward is: " + str(avg_reward))
+            print("best session is: " + str(best_session))
+
+    # If we finished all training sessions, we plot the rewards for each episode played
+    plt.scatter(range(1, len(accum_train_rewards) + 1), accum_train_rewards)
+    plt.title('Reward achieved over training episodes')
+    plt.xlabel('episode')
+    plt.ylabel('reward')
+    plt.savefig(os.path.join(model_path, f'reward_plot'))
+    plt.show()
