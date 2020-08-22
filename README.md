@@ -23,6 +23,6 @@ The entire project description is explained in length in the file - CurveFever_A
     
 support
 -------
-For any questions or comments, feel free to email me at danielrotem33@gmail.com
+For any questions or comments, feel free to email us at danielrotem33@gmail.com or mirafinkel@gmail.com
 
 
